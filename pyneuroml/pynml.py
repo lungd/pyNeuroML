@@ -926,6 +926,8 @@ def generate_plot(xvalues,
                   cols_in_legend_box=3,
                   show_plot_already=True,
                   save_figure_to=None,
+                  fig_format='png',
+                  dpi=100,
                   title_above_plot=False):
                       
                       
@@ -964,7 +966,7 @@ def generate_plot(xvalues,
         plt.ylim(ylim)
 
     if save_figure_to:
-        plt.savefig(save_figure_to,bbox_inches='tight')
+        plt.savefig(save_figure_to,bbox_inches='tight', format=fig_format, dpi=dpi)
         
     if show_plot_already:
         plt.show()
