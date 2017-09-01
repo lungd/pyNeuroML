@@ -13,6 +13,7 @@ def generate_lems_file_for_neuroml(sim_id,
                                    dt, 
                                    lems_file_name,
                                    target_dir,
+                                   nml_doc = None,  # Use this if the nml doc has already been loaded (to avoid delay in reload)
                                    include_extra_files = [],
                                    gen_plots_for_all_v = True,
                                    plot_all_segments = False,
@@ -33,11 +34,12 @@ def generate_lems_file_for_neuroml(sim_id,
     
     file_name_full = '%s/%s'%(target_dir,lems_file_name)
     
-    print_comment_v('Creating LEMS file at: %s for NeuroML 2 file: %s'%(file_name_full,neuroml_file))
+    print_comment_v('Creating LEMS file at: %s for NeuroML 2 file: %s (copy: %s)'%(file_name_full,neuroml_file,copy_neuroml))
     
     ls = LEMSSimulation(sim_id, duration, dt, target)
     
-    nml_doc = read_neuroml2_file(neuroml_file, include_includes=True, verbose=True)
+    if nml_doc == None:
+        nml_doc = read_neuroml2_file(neuroml_file, include_includes=True, verbose=True)
     
     quantities_saved = []
     
@@ -57,19 +59,31 @@ def generate_lems_file_for_neuroml(sim_id,
         
         ls.include_neuroml2_file(neuroml_file_name, include_included=False)
         
+        nml_dir = os.path.dirname(neuroml_file) if len(os.path.dirname(neuroml_file))>0 else '.'
         
         for include in nml_doc.includes:
-            incl_curr = '%s/%s'%(os.path.dirname(neuroml_file),include.href)
-            print_comment_v(' - Including %s located at %s'%(include.href, incl_curr))
-            shutil.copy(incl_curr, target_dir)
+            incl_curr = '%s/%s'%(nml_dir,include.href)
+            print_comment_v(' - Including %s located at %s, copying to %s'%(include.href, incl_curr,target_dir))
+            
+            if not os.path.isfile("%s/%s"%(target_dir, os.path.basename(incl_curr))) and \
+               not os.path.isfile("%s/%s"%(target_dir, incl_curr)) and \
+               not os.path.isfile(incl_curr):
+                shutil.copy(incl_curr, target_dir)
+                
             ls.include_neuroml2_file(include.href, include_included=False)
             
             sub_doc = read_neuroml2_file(incl_curr)
+            
+            sub_dir = os.path.dirname(incl_curr) if len(os.path.dirname(incl_curr))>0 else '.'
         
             for include in sub_doc.includes:
-                incl_curr = '%s/%s'%(os.path.dirname(neuroml_file),include.href)
+                incl_curr = '%s/%s'%(sub_dir,include.href)
                 print_comment_v(' -- Including %s located at %s'%(include.href, incl_curr))
-                shutil.copy(incl_curr, target_dir)
+                
+                if not os.path.isfile("%s/%s"%(target_dir, os.path.basename(incl_curr))) and \
+                   not os.path.isfile("%s/%s"%(target_dir, incl_curr)):
+                    shutil.copy(incl_curr, target_dir)
+                
                 ls.include_neuroml2_file(include.href, include_included=False)
                 
                 
@@ -82,12 +96,22 @@ def generate_lems_file_for_neuroml(sim_id,
         for network in nml_doc.networks:
             for population in network.populations:
                 
-                quantity_template = "%s[%i]/v"
+                variable = "v" # 
                 quantity_template_e = "%s[%i]"
+
                 component = population.component
                 size = population.size
                 cell = None
                 segment_ids = []
+                
+                for c in nml_doc.spike_generator_poissons:
+                    if c.id == component:
+                        variable = "tsince"
+                for c in nml_doc.SpikeSourcePoisson:
+                    if c.id == component:
+                        variable = "tsince"
+                            
+                quantity_template = "%s[%i]/"+variable
                 if plot_all_segments or gen_spike_saves_for_all_somas:
                     for c in nml_doc.cells:
                         if c.id == component:
@@ -96,8 +120,9 @@ def generate_lems_file_for_neuroml(sim_id,
                                 segment_ids.append(segment.id)
                             segment_ids.sort()
                         
+                
                 if population.type and population.type == 'populationList':
-                    quantity_template = "%s/%i/"+component+"/v"
+                    quantity_template = "%s/%i/"+component+"/"+variable
                     quantity_template_e = "%s/%i/"+component+""
                     # Multicompartmental cell
                     ### Needs to be supported in NeuronWriter
@@ -122,10 +147,10 @@ def generate_lems_file_for_neuroml(sim_id,
                             ls.add_line_to_display(disp0, "%s[%i]: v"%(population.id, i), quantity, "1mV", get_next_hex_color())
                 
                 if gen_saves_for_all_v or population.id in gen_saves_for_only_populations:
-                    print_comment('Saving %i values of v for %s in population %s'%(size, component, population.id))
+                    print_comment('Saving %i values of %s for %s in population %s'%(size, variable, component, population.id))
    
                     of0 = 'Volts_file__%s'%population.id
-                    ls.create_output_file(of0, "%s.%s.v.dat"%(sim_id,population.id))
+                    ls.create_output_file(of0, "%s.%s.%s.dat"%(sim_id,population.id,variable))
                     for i in range(size):
                         if cell!=None and save_all_segments:
                             quantity_template_seg = "%s/%i/"+component+"/%i/v"
@@ -151,9 +176,19 @@ def generate_lems_file_for_neuroml(sim_id,
     for display in gen_plots_for_quantities.keys():
         
         quantities = gen_plots_for_quantities[display]
-        ls.create_display(display, "Plots of %s"%display, "-90", "50")
+        max_ = "1"
+        min_ = "-1"
+        scale = "1"
+        
+        # Check for v ...
+        if quantities and len(quantities)>0 and quantities[0].endswith('/v'):
+            max_ = "40"
+            min_ = "-80"
+            scale = "1mV"
+            
+        ls.create_display(display, "Plots of %s"%display, min_, max_)
         for q in quantities:
-            ls.add_line_to_display(display, safe_variable(q), q, "1", get_next_hex_color())
+            ls.add_line_to_display(display, safe_variable(q), q, scale, get_next_hex_color())
             
     for file_name in gen_saves_for_quantities.keys():
         

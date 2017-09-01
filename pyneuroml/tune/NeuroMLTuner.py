@@ -38,13 +38,15 @@ DEFAULTS = {'simTime':             500,
             'mutationRate':        0.5,
             'numElites':           1,
             'numParallelEvaluations':1,
+            'cleanup':             True,
             'seed':                12345,
             'simulator':           'jNeuroML',
             'knownTargetValues':   '{}',
             'nogui':               False,
             'showPlotAlready':     True,
             'verbose':             False,
-            'dryRun':              False} 
+            'dryRun':              False,
+            'extraReportInfo':     None} 
             
             
 def process_args():
@@ -193,6 +195,17 @@ def process_args():
                         default=DEFAULTS['dryRun'],
                         help="Dry run; just print setup information")
                         
+    parser.add_argument('-extraReportInfo', 
+                        type=str,
+                        metavar='<extraReportInfo>', 
+                        default=DEFAULTS['extraReportInfo'],
+                        help='Extra tag/value pairs can be put into the report.json:  -extraReportInfo=["tag":"value"]')
+                        
+    parser.add_argument('-cleanup', 
+                        action='store_true',
+                        default=DEFAULTS['cleanup'],
+                        help="Should (some) generated files, e.g. *.dat, be deleted as optimisation progresses?")
+                        
     return parser.parse_args()
                        
                         
@@ -210,10 +223,14 @@ def _run_optimisation(a):
     if isinstance(a.target_data, str): a.target_data = parse_dict_arg(a.target_data)
     if isinstance(a.weights, str): a.weights = parse_dict_arg(a.weights)
     if isinstance(a.known_target_values, str): a.known_target_values = parse_dict_arg(a.known_target_values)
+    if isinstance(a.extra_report_info, str): a.extra_report_info = parse_dict_arg(a.extra_report_info)
     
     pynml.print_comment_v("=====================================================================================")
     pynml.print_comment_v("Starting run_optimisation with: ")
-    for key,value in a.__dict__.items():
+    keys = sorted(a.__dict__.keys())
+    
+    for key in keys:
+        value = a.__dict__[key]
         pynml.print_comment_v("  %s = %s%s"%(key,' '*(30-len(key)),value))
     pynml.print_comment_v("=====================================================================================")
     
@@ -233,7 +250,8 @@ def _run_optimisation(a):
                                       a.dt, 
                                       simulator = a.simulator, 
                                       generate_dir=run_dir,
-                                      num_parallel_evaluations = a.num_parallel_evaluations)
+                                      num_parallel_evaluations = a.num_parallel_evaluations,
+                                      cleanup = a.cleanup)
 
     peak_threshold = 0
 
@@ -289,7 +307,7 @@ def _run_optimisation(a):
         sim_var[key]=value
 
 
-    best_candidate_t, best_candidate_v = my_controller.run_individual(sim_var,show=False)
+    best_candidate_t, best_candidate_v = my_controller.run_individual(sim_var, show=False, cleanup=False)
 
     best_candidate_analysis = analysis.NetworkAnalysis(best_candidate_v,
                                                best_candidate_t,
@@ -341,6 +359,10 @@ def _run_optimisation(a):
     reportj['run_directory'] = run_dir
     reportj['reference'] = ref
     
+    if a.extra_report_info:
+        for key in a.extra_report_info:
+            reportj[key] = a.extra_report_info[key]
+    
     
     report_file = open("%s/report.json"%run_dir,'w')
     report_file.write(pp.pformat(reportj))
@@ -380,7 +402,8 @@ def _run_optimisation(a):
         utils.plot_generation_evolution(sim_var.keys(), 
                                         individuals_file_name = '%s/ga_individuals.csv'%run_dir, 
                                         target_values=a.known_target_values,
-                                        show_plot_already = a.show_plot_already)
+                                        show_plot_already = a.show_plot_already,
+                                        title_prefix=ref)
         
         if a.show_plot_already:
             plt.show()
@@ -419,8 +442,12 @@ def run_2stage_optimization(prefix,
                             seed,
                             known_target_values,
                             dry_run = False,
-                            num_parallel_evaluations = 1):
+                            extra_report_info = {},
+                            num_parallel_evaluations = 1,
+                            cleanup = True):
 
+        mut_rat_1 = mutation_rate[0] if isinstance(mutation_rate, list) else mutation_rate
+        
         report1 = run_optimisation(prefix = "%s_STAGE1"%prefix, 
                          neuroml_file =     neuroml_file,
                          target =           target,
@@ -435,7 +462,7 @@ def run_2stage_optimization(prefix,
                          max_evaluations =  max_evaluations_1,
                          num_selected =     num_selected_1,
                          num_offspring =    num_offspring_1,
-                         mutation_rate =    mutation_rate,
+                         mutation_rate =    mut_rat_1,
                          num_elites =       num_elites,
                          simulator =        simulator,
                          nogui =            nogui,
@@ -443,7 +470,9 @@ def run_2stage_optimization(prefix,
                          seed =             seed,
                          known_target_values = known_target_values,
                          dry_run =          dry_run,
-                         num_parallel_evaluations = num_parallel_evaluations)
+                         extra_report_info = extra_report_info,
+                         num_parallel_evaluations = num_parallel_evaluations,
+                         cleanup = cleanup)
                          
         
         for pi in range(len(parameters)):
@@ -452,6 +481,8 @@ def run_2stage_optimization(prefix,
                 max_constraints_2[pi] = report1['fittest vars'][param]*(1+delta_constraints)
             if min_constraints_2[pi] == 'x':
                 min_constraints_2[pi] = report1['fittest vars'][param]*(1-delta_constraints)
+                
+        mut_rat_2 = mutation_rate[1] if isinstance(mutation_rate, list) else mutation_rate
                
         report2 = run_optimisation(prefix = "%s_STAGE2"%prefix, 
                          neuroml_file =     neuroml_file,
@@ -467,7 +498,7 @@ def run_2stage_optimization(prefix,
                          max_evaluations =  max_evaluations_2,
                          num_selected =     num_selected_2,
                          num_offspring =    num_offspring_2,
-                         mutation_rate =    mutation_rate,
+                         mutation_rate =    mut_rat_2,
                          num_elites =       num_elites,
                          simulator =        simulator,
                          nogui =            nogui,
@@ -475,6 +506,7 @@ def run_2stage_optimization(prefix,
                          seed =             seed,
                          known_target_values = known_target_values,
                          dry_run =          dry_run,
+                         extra_report_info = extra_report_info,
                          num_parallel_evaluations = num_parallel_evaluations) 
                 
         
@@ -501,7 +533,10 @@ def parse_dict_arg(dict_arg):
         if len(e) > 0:
             key = e[:e.rfind(':')]
             value = e[e.rfind(':')+1:]
-            ret[key] = float(value)
+            try:
+                ret[key] = float(value)
+            except: 
+                ret[key] = value
     #print("Command line argument %s parsed as: %s"%(dict_arg,ret))
     return ret
 

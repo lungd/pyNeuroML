@@ -260,6 +260,16 @@ def split_nml2_quantity(nml2_quantity):
     
     return magnitude, unit
 
+def get_value_in_si(nml2_quantity):
+    
+    model = get_lems_model_with_units()
+    m, u = split_nml2_quantity(nml2_quantity)
+    si_value = None
+    for un in model.units:
+        if un.symbol == u:
+            si_value =  (m + un.offset) * un.scale * pow(10, un.power)
+            
+    return si_value
     
 def convert_to_units(nml2_quantity, unit, verbose=DEFAULTS['v']):
      
@@ -322,8 +332,9 @@ def validate_neuroml2(nml2_file_name, verbose_validate=True,max_memory=None):
                           exit_on_fail = False)
     
 
-def read_neuroml2_file(nml2_file_name, include_includes=False, verbose=False, 
-                       already_included=[], optimized=False):  
+def read_neuroml2_file(nml2_file_name, include_includes=False, 
+                       verbose=False, already_included=[], 
+                       optimized=False, check_validity_pre_include=False):  
     
     print_comment("Loading NeuroML2 file: %s" % nml2_file_name, verbose)
     
@@ -342,32 +353,48 @@ def read_neuroml2_file(nml2_file_name, include_includes=False, verbose=False,
         print_comment('Including included files (included already: %s)' \
                       % already_included, verbose)
         
+        incl_to_remove = []
         for include in nml2_doc.includes:
             incl_loc = os.path.abspath(os.path.join(base_path, include.href))
             if incl_loc not in already_included:
-                print_comment("Loading included NeuroML2 file: %s (base: %s, resolved: %s)" % (include.href, base_path, incl_loc), 
+                              
+                inc = True
+                if check_validity_pre_include:
+                    inc = validate_neuroml2(incl_loc, verbose_validate=False)
+                    
+                print_comment("Loading included NeuroML2 file: %s (base: %s, resolved: %s, checking %s)" % (include.href, base_path, incl_loc,check_validity_pre_include), 
                               verbose)
-                nml2_sub_doc = read_neuroml2_file(incl_loc, True, 
-                    verbose=verbose, already_included=already_included)
-                already_included.append(incl_loc)
-                
-                membs = inspect.getmembers(nml2_sub_doc)
+                if inc:
+                    nml2_sub_doc = read_neuroml2_file(incl_loc, True, 
+                        verbose=verbose, already_included=already_included, 
+                        check_validity_pre_include=check_validity_pre_include)
+                    if not incl_loc in already_included:
+                        already_included.append(incl_loc)
 
-                for memb in membs:
-                    if isinstance(memb[1], list) and len(memb[1])>0 \
-                            and not memb[0].endswith('_'):
-                        for entry in memb[1]:
-                            if memb[0] != 'includes':
-                                print_comment("  Adding %s from: %s to list: %s" \
-                                    %(entry, incl_loc, memb[0]))
-                                getattr(nml2_doc, memb[0]).append(entry)
-                            
-        nml2_doc.includes = []
+                    membs = inspect.getmembers(nml2_sub_doc)
+
+                    for memb in membs:
+                        if isinstance(memb[1], list) and len(memb[1])>0 \
+                                and not memb[0].endswith('_'):
+                            for entry in memb[1]:
+                                if memb[0] != 'includes':
+                                    print_comment("  Adding %s from: %s to list: %s" \
+                                        %(entry, incl_loc, memb[0]))
+                                    getattr(nml2_doc, memb[0]).append(entry)
+                    incl_to_remove.append(include)
+                else:
+                    print_comment("Not including file as it's not valid...",verbose)
+                      
+        for include in incl_to_remove:
+            nml2_doc.includes.remove(include)
             
     return nml2_doc
 
 
 def quick_summary(nml2_doc):
+    '''
+    Or better just use nml2_doc.summary(show_includes=False)
+    '''
     
     info = 'Contents of NeuroML 2 document: %s\n'%nml2_doc.id
     membs = inspect.getmembers(nml2_doc)
@@ -379,8 +406,9 @@ def quick_summary(nml2_doc):
             info+='  %s:\n    ['%memb[0]
             for entry in memb[1]:
                 extra = '???'
-                extra = entry.id if hasattr(entry,'id') else extra
+                extra = entry.name if hasattr(entry,'name') else extra
                 extra = entry.href if hasattr(entry,'href') else extra
+                extra = entry.id if hasattr(entry,'id') else extra
                 
                 info+=" %s (%s),"%(entry, extra)
             
@@ -430,7 +458,8 @@ def relative_path(base_dir, file_name):
 
 
 def run_lems_with_jneuroml(lems_file_name, 
-                           max_memory=DEFAULTS['default_java_max_memory'], 
+                           max_memory=DEFAULTS['default_java_max_memory'],
+                           skip_run=False, 
                            nogui=False, 
                            load_saved_data=False, 
                            reload_events=False,
@@ -438,7 +467,8 @@ def run_lems_with_jneuroml(lems_file_name,
                            show_plot_already=True, 
                            exec_in_dir = ".",
                            verbose=DEFAULTS['v'],
-                           exit_on_fail = True):  
+                           exit_on_fail = True,
+                           cleanup=False):  
                                
     print_comment("Loading LEMS file: %s and running with jNeuroML" \
                   % lems_file_name, verbose)
@@ -446,7 +476,10 @@ def run_lems_with_jneuroml(lems_file_name,
     gui = " -nogui" if nogui else ""
     post_args += gui
     
-    success = run_jneuroml("", 
+    t_run = datetime.now()
+    
+    if not skip_run:
+        success = run_jneuroml("", 
                            lems_file_name, 
                            post_args, 
                            max_memory = max_memory, 
@@ -459,10 +492,12 @@ def run_lems_with_jneuroml(lems_file_name,
     
     if load_saved_data:
         return reload_saved_data(relative_path(exec_in_dir,lems_file_name), 
+                                 t_run=t_run,
                                  plot=plot, 
                                  show_plot_already=show_plot_already, 
                                  simulator='jNeuroML',
-                                 reload_events=reload_events)
+                                 reload_events=reload_events,
+                                 remove_dat_files_after_load=cleanup)
     else:
         return True
     
@@ -505,7 +540,8 @@ def run_lems_with_jneuroml_neuron(lems_file_name,
                                   exec_in_dir = ".",
                                   only_generate_scripts = False,
                                   verbose=DEFAULTS['v'],
-                                  exit_on_fail = True):
+                                  exit_on_fail = True,
+                                  cleanup=False):
                                       
     print_comment("Loading LEMS file: %s and running with jNeuroML_NEURON" \
                   % lems_file_name, verbose)
@@ -538,7 +574,63 @@ def run_lems_with_jneuroml_neuron(lems_file_name,
                                  plot=plot, 
                                  show_plot_already=show_plot_already, 
                                  simulator='jNeuroML_NEURON',
-                                 reload_events=reload_events)
+                                 reload_events=reload_events,
+                                 remove_dat_files_after_load=cleanup)
+    else:
+        return True
+
+
+def run_lems_with_jneuroml_netpyne(lems_file_name, 
+                                  max_memory=DEFAULTS['default_java_max_memory'], 
+                                  skip_run=False,
+                                  nogui=False, 
+                                  num_processors=1, 
+                                  load_saved_data=False, 
+                                  reload_events=False,
+                                  plot=False, 
+                                  show_plot_already=True, 
+                                  exec_in_dir = ".",
+                                  only_generate_scripts = False,
+                                  verbose=DEFAULTS['v'],
+                                  exit_on_fail = True,
+                                  cleanup=False):
+                                      
+    print_comment("Loading LEMS file: %s and running with jNeuroML_NetPyNE" \
+                  % lems_file_name, verbose)
+                  
+    post_args = " -netpyne"
+    
+    if num_processors!=1:
+        post_args += ' -np %i'%num_processors
+    if not only_generate_scripts:
+        post_args += ' -run'
+    
+    gui = " -nogui" if nogui else ""
+    post_args += gui
+    
+    t_run = datetime.now()
+    if skip_run:
+      success = True
+    else:
+      success = run_jneuroml("", 
+                           lems_file_name, 
+                           post_args, 
+                           max_memory = max_memory, 
+                           exec_in_dir = exec_in_dir, 
+                           verbose = verbose, 
+                           exit_on_fail = exit_on_fail)
+    
+    if not success: 
+        return False
+    
+    if load_saved_data:
+        return reload_saved_data(relative_path(exec_in_dir,lems_file_name), 
+                                 t_run=t_run,
+                                 plot=plot, 
+                                 show_plot_already=show_plot_already, 
+                                 simulator='jNeuroML_NEURON',
+                                 reload_events=reload_events,
+                                 remove_dat_files_after_load=cleanup)
     else:
         return True
     
@@ -549,7 +641,8 @@ def reload_saved_data(lems_file_name,
                       show_plot_already=True, 
                       simulator=None, 
                       reload_events=False, 
-                      verbose=DEFAULTS['v']): 
+                      verbose=DEFAULTS['v'],
+                      remove_dat_files_after_load=False): 
     
     # Could use pylems to parse all this...
     traces = {}
@@ -613,6 +706,10 @@ def reload_saved_data(lems_file_name,
                     t = float(values[1])
                 #print_comment("Found a event in cell %s (%s) at t = %s"%(id,selections[id],t))
                 events[selections[id]].append(t)
+                
+            if remove_dat_files_after_load:
+                print_comment_v("Removing file %s after having loading its data!"%file_name)
+                os.remove(file_name)
 
     
     output_files = sim.findall(ns_prefix+'OutputFile')
@@ -621,7 +718,7 @@ def reload_saved_data(lems_file_name,
         rows = int(max(1,math.ceil(n_output_files/float(3))))
         columns = min(3,n_output_files)
         fig,ax = plt.subplots(rows,columns,sharex=True,
-                              figsize=(4*columns,4*rows))
+                              figsize=(8*columns,4*rows))
         if n_output_files>1:
             ax = ax.ravel()
     
@@ -661,7 +758,10 @@ def reload_saved_data(lems_file_name,
             
             for vi in range(len(values)):
               traces[cols[vi]].append(float(values[vi]))
-               
+
+        if remove_dat_files_after_load:
+            print_comment_v("Removing file %s after having loading its data!"%file_name)
+            os.remove(file_name)
 
         if plot:
             info = "Data loaded from %s%s" \
@@ -917,23 +1017,34 @@ def generate_plot(xvalues,
                   labels = None, 
                   colors = None, 
                   linestyles = None, 
+                  linewidths = None, 
                   markers = None, 
                   xaxis = None, 
                   yaxis = None, 
                   xlim = None,
                   ylim = None,
                   grid = False,
+                  logx = False,
+                  logy = False,
+                  font_size = 12,
+                  bottom_left_spines_only = False,
                   cols_in_legend_box=3,
                   show_plot_already=True,
                   save_figure_to=None,
                   fig_format='png',
                   dpi=100,
                   title_above_plot=False):
-                      
+               
+    print_comment_v("Generating plot: %s"%(title))       
                       
     from matplotlib import pyplot as plt
+    from matplotlib import rcParams
+    
+    rcParams.update({'font.size': font_size})
 
     fig = plt.figure()
+    ax = fig.add_subplot(111)
+    
     fig.canvas.set_window_title(title)
     if title_above_plot:
         plt.title(title)
@@ -945,17 +1056,29 @@ def generate_plot(xvalues,
         
     if grid:
         plt.grid('on')
+        
+    if logx:
+        ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
+        
+    if bottom_left_spines_only:
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)       
+        ax.yaxis.set_ticks_position('left')
+        ax.xaxis.set_ticks_position('bottom')
 
     for i in range(len(xvalues)):
 
         linestyle = '-' if not linestyles else linestyles[i]
         label = '' if not labels else labels[i]
         marker = None if not markers else markers[i]
+        linewidth = 1 if not linewidths else linewidths[i]
         
         if colors:
-            plt.plot(xvalues[i], yvalues[i], 'o', color=colors[i], marker=marker, linestyle=linestyle, label=label)
+            plt.plot(xvalues[i], yvalues[i], 'o', color=colors[i], marker=marker, linestyle=linestyle, linewidth=linewidth, label=label)
         else:
-            plt.plot(xvalues[i], yvalues[i], 'o', marker=marker, linestyle=linestyle, label=label)
+            plt.plot(xvalues[i], yvalues[i], 'o', marker=marker, linestyle=linestyle, linewidth=linewidth, label=label)
 
     if labels:
         plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), fancybox=True, shadow=True, ncol=cols_in_legend_box)
@@ -967,9 +1090,12 @@ def generate_plot(xvalues,
 
     if save_figure_to:
         plt.savefig(save_figure_to,bbox_inches='tight', format=fig_format, dpi=dpi)
+        print_comment_v("Saved image to %s of plot: %s"%(save_figure_to,title))
         
     if show_plot_already:
         plt.show()
+        
+    return ax
         
 '''
     As usually saved by jLEMS, etc. First column is time (in seconds), multiple ofther columns
@@ -991,11 +1117,65 @@ def reload_standard_dat_file(file_name):
         for i in range(len(words)-1):
             data[i].append(float(words[i+1]))
 
-    print("Loaded data from %s; columns: %s"%(file_name, indeces))
+    print_comment_v("Loaded data from %s; columns: %s"%(file_name, indeces))
     
     dat_file.close()
 
     return data, indeces
+
+
+
+
+def _find_elements(el, name, rdf=False):
+    ns = 'http://www.neuroml.org/schema/neuroml2'
+    if rdf:
+        ns = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+    return el.findall('.//{%s}%s'%(ns,name))
+
+
+def _get_attr_in_element(el, name, rdf=False):
+    ns = 'http://www.neuroml.org/schema/neuroml2'
+    if rdf:
+        ns = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+    aname = '{%s}%s'%(ns,name)
+    return el.attrib[aname] if aname in el.attrib else None
+
+
+
+def extract_annotations(nml2_file):
+    
+    from lxml import etree
+    
+    import pprint; pp = pprint.PrettyPrinter()
+
+    test_file = open(nml2_file)
+
+    root = etree.parse(test_file).getroot()
+    
+    annotations = {}
+
+    for a in _find_elements(root,'annotation'):
+
+        for r in _find_elements(a,'Description',rdf=True):
+            
+            desc = _get_attr_in_element(r,'about',rdf=True)
+            
+            annotations[desc] = []
+
+            for info in r:
+                if isinstance(info.tag, str):
+                    kind = info.tag.replace('{http://biomodels.net/biology-qualifiers/}','bqbiol:')
+                    kind = kind.replace('{http://biomodels.net/model-qualifiers/}','bqmodel:')
+
+                    for li in _find_elements(info,'li',rdf=True):
+
+                        attr = _get_attr_in_element(li,'resource',rdf=True)
+                        if attr:
+                            annotations[desc].append({kind: attr})
+
+
+    print_comment_v("Annotations in %s: "%(nml2_file))
+    pp.pprint(annotations)
 
 
 def main(args=None):
