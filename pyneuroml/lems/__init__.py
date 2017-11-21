@@ -28,18 +28,17 @@ def generate_lems_file_for_neuroml(sim_id,
                                    gen_spike_saves_for_cells = {},  # Dict with file names vs lists of quantity paths
                                    spike_time_format='ID_TIME',
                                    copy_neuroml = True,
-                                   lems_file_generate_seed=None,
-                                   simulation_seed=12345):
+                                   seed=None):
                                        
     
-    if lems_file_generate_seed:
-        random.seed(lems_file_generate_seed) # To ensure same LEMS file (e.g. colours of plots) are generated every time for the same input
+    if seed:
+        random.seed(seed) # To ensure same LEMS file (e.g. colours of plots) are generated every time for the same input
     
     file_name_full = '%s/%s'%(target_dir,lems_file_name)
     
     print_comment_v('Creating LEMS file at: %s for NeuroML 2 file: %s (copy: %s)'%(file_name_full,neuroml_file,copy_neuroml))
     
-    ls = LEMSSimulation(sim_id, duration, dt, target,lems_seed=simulation_seed)
+    ls = LEMSSimulation(sim_id, duration, dt, target)
     
     if nml_doc == None:
         nml_doc = read_neuroml2_file(neuroml_file, include_includes=True, verbose=True)
@@ -215,7 +214,7 @@ def generate_lems_file_for_neuroml(sim_id,
         
     ls.save_to_file(file_name=file_name_full)
     
-    return quantities_saved, ls
+    return quantities_saved
 
 
 # Mainly for NEURON etc.
